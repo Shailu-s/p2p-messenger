@@ -1,0 +1,8 @@
+# private identity keys — never commit
+*.key
+
+# compiled binary
+p2pchat
+
+# runtime peer state (contains local LAN addresses)
+peers-*.json
