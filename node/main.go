@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -52,6 +54,61 @@ func main() {
 	store := NewStore(1000)
 	RegisterStoreServer(host, store)
 
+	// Long-term X25519 identity for encryption. Separate from the libp2p
+	// Ed25519 host key: that one signs, this one does Diffie-Hellman.
+	ident, err := loadOrCreateIdentity("ident-" + port + ".x25519")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sm := NewSessionManager(ident, host.ID())
+	fmt.Printf("encryption key: %x\n", ident.Public[:8])
+
+	// A second topic carries key announcements. Keeping it separate from chat
+	// means a node can learn keys without having to parse every chat message.
+	keyTopic, err := ps.Join("chat-keys")
+	if err != nil {
+		log.Fatal(err)
+	}
+	keySub, err := keyTopic.Subscribe()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Listen for peers announcing their keys.
+	go func() {
+		for {
+			msg, err := keySub.Next(ctx)
+			if err != nil {
+				return
+			}
+			if msg.GetFrom() == host.ID() {
+				continue
+			}
+			var ka KeyAnnounce
+			if err := json.Unmarshal(msg.Data, &ka); err != nil {
+				continue
+			}
+			p, err := peer.Decode(ka.PeerID)
+			if err != nil {
+				continue
+			}
+			if sm.LearnKey(p, ka.PublicKey) {
+				fmt.Printf("\n[crypto] learned key for %s (%x)\n", short(p), ka.PublicKey[:6])
+			}
+		}
+	}()
+
+	// Announce our own key, repeatedly. A single announcement at boot is lost
+	// on every peer that starts later -- the same lesson as KeepConnected:
+	// in a P2P network, presence is continuous, not a startup event.
+	go func() {
+		ka, _ := json.Marshal(KeyAnnounce{PeerID: host.ID().String(), PublicKey: ident.Public})
+		for {
+			keyTopic.Publish(ctx, ka)
+			time.Sleep(5 * time.Second)
+		}
+	}()
+
 	go func() {
 		for {
 			msg, err := sub.Next(ctx)
@@ -67,12 +124,26 @@ func main() {
 				Payload:   msg.Data,
 			}
 
-			if store.Put(m) {
-				if !isMine {
-					fmt.Printf("\n[%s] %s", msg.GetFrom().String()[:12], string(msg.Data))
-				}
-			} else if !isMine {
-				fmt.Printf("\n(duplicate ignored: %s)", m.ID[:8])
+			// Store FIRST, unconditionally, before knowing whether we can read
+			// it. This is the whole point of store-and-forward: we hold mail
+			// for peers whose content is none of our business.
+			stored := store.Put(m)
+
+			if isMine {
+				fmt.Printf("[stored: %d]\n", store.Count())
+				continue
+			}
+			if !stored {
+				fmt.Printf("\n(duplicate ignored: %s)[stored: %d]\n", m.ID[:8], store.Count())
+				continue
+			}
+
+			if pt, ok := sm.TryDecrypt(msg.Data); ok {
+				fmt.Printf("\n[%s] %s", short(msg.GetFrom()), string(pt))
+			} else {
+				// Not ours to read. We relay and store it anyway.
+				fmt.Printf("\n[opaque] %d bytes from %s, not for me",
+					len(msg.Data), short(msg.GetFrom()))
 			}
 			fmt.Printf("[stored: %d]\n", store.Count())
 		}
@@ -123,8 +194,24 @@ func main() {
 		if err != nil {
 			return
 		}
-		if err := topic.Publish(ctx, []byte(line)); err != nil {
-			fmt.Println("publish error:", err)
+		text := strings.TrimRight(line, "\n")
+		if text == "" {
+			continue
 		}
+
+		// One ciphertext per known peer. Sessions are pairwise but the network
+		// is broadcast, so N recipients means N copies on the wire. That cost
+		// is the trade-off for every recipient having their own ratchet.
+		blobs := sm.EncryptToAll([]byte(text))
+		if len(blobs) == 0 {
+			fmt.Println("(nobody to encrypt to yet — waiting for key announcements)")
+			continue
+		}
+		for _, b := range blobs {
+			if err := topic.Publish(ctx, b); err != nil {
+				fmt.Println("publish error:", err)
+			}
+		}
+		fmt.Printf("(sent %d encrypted copies)\n", len(blobs))
 	}
 }
