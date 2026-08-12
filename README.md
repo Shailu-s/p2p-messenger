@@ -1,19 +1,25 @@
-# Running the 3-node test
+# p2p-chat
 
-Everything runs from this directory (`project/p2p-chat/node`), one terminal per node.
+A minimal Waku-style P2P messaging node in Go: libp2p transport, gossipsub
+routing, a persistent peer book, and store-and-forward history for nodes that
+were offline.
 
-## Setup (once per shell)
+## Running the 3-node test
+
+The node source lives in `node/`. Everything below runs from there, one
+terminal per node.
+
+### Setup (once per shell)
 
 ```sh
-export PATH=~/sdk/go1.25.7/bin:$PATH
-cd ~/interview-helper/project/p2p-chat/node
+cd node
 go build -o p2pchat .
 ```
 
 Rebuild after every code change. `go run .` also works but is slower to start,
 which matters when you are racing to type a message before a node reconnects.
 
-## Command shape
+### Command shape
 
 ```
 ./p2pchat <my-port> [peer-multiaddr]
@@ -23,7 +29,7 @@ which matters when you are racing to type a message before a node reconnects.
 - `[peer-multiaddr]` — optional. Only needed the first time a node meets a peer;
   after that the address book handles it.
 
-## Start three nodes, chained A—B—C
+### Start three nodes, chained A—B—C
 
 A and C are never connected directly. That is the point: gossip has to carry
 messages through B.
@@ -54,7 +60,7 @@ Ignore the LAN address (`192.168.x.x`) unless you are testing across machines.
 ./p2pchat 9002 /ip4/127.0.0.1/tcp/9001/p2p/12D3KooWDT9j5AHw6zonRYT7XYnwFP8kQvAe5WLgHhtvKm1pJHEd
 ```
 
-## Test 1 — gossip through the middle
+### Test 1 — gossip through the middle
 
 Type a message in A's terminal and press enter. It should appear in **both** B
 and C, even though C never connected to A.
@@ -62,7 +68,7 @@ and C, even though C never connected to A.
 Each node also prints `[stored: N]` after every message, so you can watch the
 three stores stay in step.
 
-## Test 2 — store-and-forward (the Stage 3 test)
+### Test 2 — store-and-forward (the Stage 3 test)
 
 1. Kill C (`Ctrl-C` in terminal 3).
 2. Type 3 messages in A. B receives them; C is offline and misses all three.
@@ -83,16 +89,16 @@ Expect within ~5 seconds:
 
 If C shows `new 0`, it already had them — reset and retry (see below).
 
-## Test 3 — partition
+### Test 3 — partition
 
 Kill B. A and C can no longer reach each other; messages typed in A never
 arrive at C. Restart B and they reconnect on their own within ~5 seconds,
 because `KeepConnected` retries the address book forever rather than giving up
 at boot.
 
-## State files, and resetting
+### State files, and resetting
 
-Written into this directory, named by port:
+Written into `node/`, named by port:
 
 | File | What it holds | Delete to... |
 |---|---|---|
@@ -108,7 +114,7 @@ rm -f node-*.key peers-*.json
 Keep the `.key` files if you want stable PeerIDs across restarts — deleting them
 means re-copying multiaddrs into every terminal.
 
-## Notes on what you will see
+### Notes on what you will see
 
 - Startup prints **two** dial addresses: loopback and your LAN interface. Same
   node, two network paths.
@@ -119,7 +125,7 @@ means re-copying multiaddrs into every terminal.
 - History fetch retries every 3 seconds for about 36 seconds after boot, since
   at startup there is usually nobody connected yet to ask.
 
-## Running the tests
+### Running the tests
 
 ```sh
 go test ./...
