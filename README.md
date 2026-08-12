@@ -1,8 +1,26 @@
 # p2p-chat
 
 A minimal Waku-style P2P messaging node in Go: libp2p transport, gossipsub
-routing, a persistent peer book, and store-and-forward history for nodes that
-were offline.
+routing, a persistent peer book, store-and-forward history for nodes that were
+offline, and end-to-end encryption with a Double Ratchet.
+
+Relaying nodes forward and store ciphertext they cannot read. Each message uses
+a fresh key, so stealing one opens exactly one message and nothing before or
+after it.
+
+Deliberately out of scope: RLN, discovery hardening, and light-client
+protocols. The aim was depth on store-and-forward and forward-secret
+encryption rather than a shallow clone of go-waku.
+
+### Seeing the encryption work
+
+```sh
+cd node
+go test -run TestDemoEavesdropper -v
+```
+
+Prints what a relaying node actually sees, then shows a stolen message key
+opening exactly one message, and replay and bit-flips being rejected.
 
 ## Running the 3-node test
 
@@ -131,5 +149,5 @@ means re-copying multiaddrs into every terminal.
 go test ./...
 ```
 
-Crypto tests (`crypto_test.go`, `ratchet_test.go`) are pure unit tests and need
-no running nodes.
+The crypto tests (`crypto_test.go`, `ratchet_test.go`, `session_test.go`) are
+pure unit tests and need no running nodes.
