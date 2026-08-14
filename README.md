@@ -8,9 +8,9 @@ Relaying nodes forward and store ciphertext they cannot read. Each message uses
 a fresh key, so stealing one opens exactly one message and nothing before or
 after it.
 
-Deliberately out of scope: RLN, discovery hardening, and light-client
-protocols. The aim was depth on store-and-forward and forward-secret
-encryption rather than a shallow clone of go-waku.
+Deliberately out of scope: RLN and discovery hardening. The aim was depth on
+store-and-forward, forward-secret encryption, and the relay/store/filter split
+rather than a shallow clone of go-waku.
 
 ### Seeing the encryption work
 
@@ -46,6 +46,15 @@ which matters when you are racing to type a message before a node reconnects.
 - `<my-port>` — the TCP port this node listens on. Also names its state files.
 - `[peer-multiaddr]` — optional. Only needed the first time a node meets a peer;
   after that the address book handles it.
+
+Light client mode uses the filter protocol instead of joining gossipsub:
+
+```
+./p2pchat light <my-port> <full-node-multiaddr> (--all|<content-topic> [content-topic...])
+```
+
+`--all` asks the full node for every stored topic. Passing one or more content
+topics tells the full node exactly which topics this light client wants.
 
 ### Start three nodes, chained A—B—C
 
@@ -121,12 +130,17 @@ Written into `node/`, named by port:
 | File | What it holds | Delete to... |
 |---|---|---|
 | `node-<port>.key` | private key = the node's permanent identity | give the node a brand new PeerID |
+| `ident-<port>.x25519` | long-term X25519 identity key | reset encrypted-session identity |
 | `peers-<port>.json` | multiaddrs of peers met so far | force it to need a peer argument again |
+| `store-<port>.json` | persisted ciphertext store | clear local message history |
+| `cursors-<port>.json` | opaque per-peer/per-topic store cursors | force history queries to restart from the beginning |
+| `sessions-<port>.json.enc` | encrypted ratchet session state | drop decryptability for ongoing sessions |
+| `state-<port>.key` | local key that encrypts session state at rest | make the encrypted session file unreadable |
 
 Full reset to a clean three-node run:
 
 ```sh
-rm -f node-*.key peers-*.json
+rm -f node-*.key ident-*.x25519 peers-*.json store-*.json cursors-*.json sessions-*.json.enc state-*.key
 ```
 
 Keep the `.key` files if you want stable PeerIDs across restarts — deleting them
@@ -136,12 +150,19 @@ means re-copying multiaddrs into every terminal.
 
 - Startup prints **two** dial addresses: loopback and your LAN interface. Same
   node, two network paths.
+- Chat ciphertexts are stored under pairwise content topics, not clear recipient
+  peer IDs. `/chat/filter/1.0.0` lets a light node subscribe to selected topics
+  from a full node, or request all topics to avoid revealing a narrower interest.
 - Your own messages are not echoed back to you, but they are stored — the
   `[stored: N]` counter still moves.
 - A duplicate arriving by a second gossip path prints
   `(duplicate ignored: <id>)`. The content hash caught it.
 - History fetch retries every 3 seconds for about 36 seconds after boot, since
   at startup there is usually nobody connected yet to ask.
+- Ratchet sessions are encrypted at rest with `state-<port>.key`. If an attacker
+  steals both that key and `sessions-<port>.json.enc`, they can recover current
+  session state; encrypting the file protects against casual disk disclosure,
+  not full machine compromise.
 
 ### Running the tests
 

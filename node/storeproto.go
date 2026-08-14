@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -22,36 +23,57 @@ func RegisterStoreServer(h host.Host, s *Store) {
 			return
 		}
 
-		msgs := s.Query(q)
+		resp, err := s.Query(q)
+		if err != nil {
+			resp.Error = err.Error()
+		}
 		fmt.Printf("\n[store] served %d messages to %s\n",
-			len(msgs), stream.Conn().RemotePeer().String()[:12])
+			len(resp.Messages), stream.Conn().RemotePeer().String()[:12])
 
-		json.NewEncoder(stream).Encode(StoreResponse{Messages: msgs})
+		json.NewEncoder(stream).Encode(resp)
 	})
 }
 
-// FetchFromAllPeers asks every connected peer for history and merges the
-// answers. Overlap costs nothing because Put dedups on the content hash, so
-// asking several peers is pure redundancy: if one is missing messages or
-// lying, another may still have them.
-func FetchFromAllPeers(ctx context.Context, h host.Host, s *Store, since int64) {
+func FetchFromAllPeers(ctx context.Context, h host.Host, s *Store, cursors *CursorBook, topics []string, sm *SessionManager) {
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
 		fmt.Println("[history] no peers to ask")
 		return
 	}
+	if len(topics) == 0 {
+		fmt.Println("[history] no content topics to ask for")
+		return
+	}
 
 	total, added := 0, 0
 	for _, p := range peers {
-		msgs, err := FetchHistory(ctx, h, p, since)
-		if err != nil {
-			continue // peer may not speak the store protocol
-		}
-		total += len(msgs)
-		for _, m := range msgs {
-			if s.Put(m) {
-				added++
-				fmt.Printf("[history] %s", string(m.Payload))
+		for _, topic := range topics {
+			cursor := ""
+			if cursors != nil {
+				cursor = cursors.Cursor(p, topic)
+			}
+			resp, err := FetchHistory(ctx, h, p, topic, cursor)
+			if err != nil {
+				continue // peer may not speak the store protocol
+			}
+			total += len(resp.Messages)
+			for _, m := range resp.Messages {
+				m.Seq = 0
+				m.Timestamp = 0
+				ok, err := s.Put(m)
+				if err != nil {
+					fmt.Printf("\n[history] store error: %v\n", err)
+					continue
+				}
+				if ok {
+					added++
+					printHistoryMessage(sm, m.Payload)
+				}
+			}
+			if cursors != nil {
+				if err := cursors.Update(p, topic, resp.NextCursor); err != nil {
+					fmt.Printf("\n[history] cursor error: %v\n", err)
+				}
 			}
 		}
 	}
@@ -59,21 +81,34 @@ func FetchFromAllPeers(ctx context.Context, h host.Host, s *Store, since int64) 
 		len(peers), total, added, s.Count())
 }
 
-func FetchHistory(ctx context.Context, h host.Host, p peer.ID, since int64) ([]StoredMessage, error) {
+func FetchHistory(ctx context.Context, h host.Host, p peer.ID, topic, cursor string) (StoreResponse, error) {
 	stream, err := h.NewStream(ctx, p, StoreProtocol)
 	if err != nil {
-		return nil, err
+		return StoreResponse{}, err
 	}
 	defer stream.Close()
 
-	q := StoreQuery{Topic: "chat-room", Since: since, Limit: 100}
+	q := StoreQuery{Topic: topic, Cursor: cursor, Limit: 100}
 	if err := json.NewEncoder(stream).Encode(q); err != nil {
-		return nil, err
+		return StoreResponse{}, err
 	}
 
 	var resp StoreResponse
 	if err := json.NewDecoder(stream).Decode(&resp); err != nil {
-		return nil, err
+		return StoreResponse{}, err
 	}
-	return resp.Messages, nil
+	if resp.Error != "" {
+		return StoreResponse{}, errors.New(resp.Error)
+	}
+	return resp, nil
+}
+
+func printHistoryMessage(sm *SessionManager, payload []byte) {
+	if sm != nil {
+		if pt, ok := sm.TryDecrypt(payload); ok {
+			fmt.Printf("\n[history] %s", string(pt))
+			return
+		}
+	}
+	fmt.Printf("\n[history opaque] %d bytes", len(payload))
 }

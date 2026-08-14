@@ -10,3 +10,9 @@ p2pchat
 
 # runtime peer state (contains local LAN addresses)
 peers-*.json
+
+# runtime message/session state
+store-*.json
+cursors-*.json
+sessions-*.json.enc
+state-*.key

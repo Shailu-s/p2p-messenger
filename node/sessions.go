@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -21,30 +24,53 @@ type KeyAnnounce struct {
 	PublicKey [32]byte `json:"pk"`
 }
 
-// AddressedEnvelope is one ciphertext plus who it is for.
+// AddressedEnvelope is one ciphertext plus the content topic it belongs to.
 //
-// Recipient is in the clear, which leaks the social graph: an observer learns
-// who talks to whom, and when, even without reading content. Real systems fight
-// this with sealed sender or per-topic addressing. We accept the leak and say
-// so -- Waku's answer is to address by TOPIC rather than recipient.
+// The recipient peer ID is not in the clear. Relays can store by topic, while
+// only peers that know the pairwise session can connect that topic to a person.
 type AddressedEnvelope struct {
-	To   string `json:"to"`
-	From string `json:"from"`
-	Wire []byte `json:"wire"` // a marshalled Envelope
+	Topic string `json:"topic"`
+	From  string `json:"from"`
+	Wire  []byte `json:"wire"` // a marshalled Envelope
 }
 
 // SessionManager holds one ratchet session per peer.
 //
-// State is in-memory only. A restart loses every session, meaning messages
-// stored before the restart can no longer be decrypted. Persisting ratchet
-// state is real future work; it also raises the question of writing key
-// material to disk, which needs an answer before it is done casually.
+// State is encrypted to disk by OpenSessionManager so store-and-forward
+// messages remain decryptable after a restart.
 type SessionManager struct {
 	mu       sync.Mutex
 	self     KeyPair
 	selfID   peer.ID
 	sessions map[peer.ID]*Session
 	keys     map[peer.ID][32]byte // long-term keys learned from announcements
+
+	statePath string
+	stateKey  [32]byte
+	persist   bool
+}
+
+type persistedSessionManager struct {
+	Version  int                         `json:"version"`
+	Keys     map[string][32]byte         `json:"keys"`
+	Sessions map[string]persistedSession `json:"sessions"`
+}
+
+type persistedSession struct {
+	Self      KeyPair            `json:"self"`
+	Remote    [32]byte           `json:"remote"`
+	RemoteSet bool               `json:"remoteSet"`
+	RootKey   [32]byte           `json:"rootKey"`
+	Send      *Chain             `json:"send"`
+	Recv      *Chain             `json:"recv"`
+	PrevSendN uint32             `json:"prevSendN"`
+	Skipped   []persistedSkipped `json:"skipped"`
+}
+
+type persistedSkipped struct {
+	DH  [32]byte `json:"dh"`
+	N   uint32   `json:"n"`
+	Key [32]byte `json:"key"`
 }
 
 func NewSessionManager(self KeyPair, id peer.ID) *SessionManager {
@@ -54,6 +80,49 @@ func NewSessionManager(self KeyPair, id peer.ID) *SessionManager {
 		sessions: make(map[peer.ID]*Session),
 		keys:     make(map[peer.ID][32]byte),
 	}
+}
+
+func OpenSessionManager(self KeyPair, id peer.ID, statePath, stateKeyPath string) (*SessionManager, error) {
+	m := NewSessionManager(self, id)
+	key, err := loadOrCreateStateKey(stateKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	m.statePath = statePath
+	m.stateKey = key
+	m.persist = true
+
+	data, err := os.ReadFile(statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return m, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	plaintext, err := openState(key, data, []byte("sessions:"+id.String()))
+	if err != nil {
+		return nil, err
+	}
+
+	var disk persistedSessionManager
+	if err := json.Unmarshal(plaintext, &disk); err != nil {
+		return nil, err
+	}
+	for idText, pk := range disk.Keys {
+		p, err := peer.Decode(idText)
+		if err != nil {
+			continue
+		}
+		m.keys[p] = pk
+	}
+	for idText, ps := range disk.Sessions {
+		p, err := peer.Decode(idText)
+		if err != nil {
+			continue
+		}
+		m.sessions[p] = ps.session()
+	}
+	return m, nil
 }
 
 // LearnKey records a peer's long-term public key. Returns true if this is new.
@@ -70,12 +139,18 @@ func (m *SessionManager) LearnKey(p peer.ID, pk [32]byte) bool {
 			fmt.Printf("\n[crypto] WARNING: %s changed its identity key\n", short(p))
 			m.keys[p] = pk
 			delete(m.sessions, p) // old session is meaningless now
+			if err := m.persistLocked(); err != nil {
+				fmt.Printf("\n[crypto] session save failed: %v\n", err)
+			}
 			return true
 		}
 		return false
 	}
 
 	m.keys[p] = pk
+	if err := m.persistLocked(); err != nil {
+		fmt.Printf("\n[crypto] session save failed: %v\n", err)
+	}
 	return true
 }
 
@@ -91,13 +166,43 @@ func (m *SessionManager) KnownPeers() []peer.ID {
 	return out
 }
 
-// session returns the session for a peer, creating it on first use.
-//
-// Both sides must agree on who is the initiator, with no negotiation round. We
-// break the tie by comparing peer IDs: the lexicographically smaller ID
-// initiates. Both sides compute the same answer independently, which is the
-// only property that matters.
-func (m *SessionManager) session(p peer.ID) (*Session, error) {
+func (m *SessionManager) KnownContentTopics() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]string, 0, len(m.keys))
+	for p := range m.keys {
+		topic, err := m.contentTopicLocked(p)
+		if err == nil {
+			out = append(out, topic)
+		}
+	}
+	return out
+}
+
+func (m *SessionManager) ContentTopic(p peer.ID) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.contentTopicLocked(p)
+}
+
+func (m *SessionManager) contentTopicLocked(p peer.ID) (string, error) {
+	theirKey, ok := m.keys[p]
+	if !ok {
+		return "", fmt.Errorf("no key known for %s", short(p))
+	}
+	shared, err := DH(m.self.Private, theirKey)
+	if err != nil {
+		return "", err
+	}
+	keys, err := kdf(shared[:], "content-topic", 1)
+	if err != nil {
+		return "", err
+	}
+	return "/chat/2/" + hex.EncodeToString(keys[0][:16]), nil
+}
+
+func (m *SessionManager) sendingSession(p peer.ID) (*Session, error) {
 	if s, ok := m.sessions[p]; ok {
 		return s, nil
 	}
@@ -112,16 +217,30 @@ func (m *SessionManager) session(p peer.ID) (*Session, error) {
 		return nil, err
 	}
 
-	var s *Session
-	if m.selfID.String() < p.String() {
-		s, err = NewSessionInitiator(shared, theirKey)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		s = NewSessionResponder(shared, m.self)
+	s, err := NewSessionInitiator(shared, theirKey)
+	if err != nil {
+		return nil, err
+	}
+	m.sessions[p] = s
+	return s, nil
+}
+
+func (m *SessionManager) receivingSession(p peer.ID) (*Session, error) {
+	if s, ok := m.sessions[p]; ok {
+		return s, nil
 	}
 
+	theirKey, ok := m.keys[p]
+	if !ok {
+		return nil, fmt.Errorf("no key known for %s", short(p))
+	}
+
+	shared, err := DH(m.self.Private, theirKey)
+	if err != nil {
+		return nil, err
+	}
+
+	s := NewSessionResponder(shared, m.self)
 	m.sessions[p] = s
 	return s, nil
 }
@@ -131,7 +250,7 @@ func (m *SessionManager) EncryptTo(p peer.ID, plaintext []byte) ([]byte, error) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	s, err := m.session(p)
+	s, err := m.sendingSession(p)
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +259,18 @@ func (m *SessionManager) EncryptTo(p peer.ID, plaintext []byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	topic, err := m.contentTopicLocked(p)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
 
 	return json.Marshal(AddressedEnvelope{
-		To:   p.String(),
-		From: m.selfID.String(),
-		Wire: wire,
+		Topic: topic,
+		From:  m.selfID.String(),
+		Wire:  wire,
 	})
 }
 
@@ -182,10 +308,6 @@ func (m *SessionManager) TryDecrypt(blob []byte) ([]byte, bool) {
 		return nil, false // not an addressed envelope at all
 	}
 
-	if ae.To != m.selfID.String() {
-		return nil, false // someone else's mail; we relay and store it blindly
-	}
-
 	from, err := peer.Decode(ae.From)
 	if err != nil {
 		return nil, false
@@ -194,7 +316,12 @@ func (m *SessionManager) TryDecrypt(blob []byte) ([]byte, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	s, err := m.session(from)
+	topic, err := m.contentTopicLocked(from)
+	if err != nil || ae.Topic != topic {
+		return nil, false
+	}
+
+	s, err := m.receivingSession(from)
 	if err != nil {
 		fmt.Printf("\n[crypto] message from %s but no session: %v\n", short(from), err)
 		return nil, false
@@ -207,7 +334,86 @@ func (m *SessionManager) TryDecrypt(blob []byte) ([]byte, bool) {
 		fmt.Printf("\n[crypto] decrypt from %s failed: %v\n", short(from), err)
 		return nil, false
 	}
+	if err := m.persistLocked(); err != nil {
+		fmt.Printf("\n[crypto] session save failed: %v\n", err)
+		return nil, false
+	}
 	return pt, true
+}
+
+func EnvelopeContentTopic(blob []byte) (string, bool) {
+	var ae AddressedEnvelope
+	if err := json.Unmarshal(blob, &ae); err != nil {
+		return "", false
+	}
+	if ae.Topic == "" {
+		return "", false
+	}
+	return ae.Topic, true
+}
+
+func (m *SessionManager) persistLocked() error {
+	if !m.persist {
+		return nil
+	}
+	disk := persistedSessionManager{
+		Version:  1,
+		Keys:     make(map[string][32]byte, len(m.keys)),
+		Sessions: make(map[string]persistedSession, len(m.sessions)),
+	}
+	for p, pk := range m.keys {
+		disk.Keys[p.String()] = pk
+	}
+	for p, s := range m.sessions {
+		disk.Sessions[p.String()] = persistSession(s)
+	}
+	plaintext, err := json.MarshalIndent(disk, "", "  ")
+	if err != nil {
+		return err
+	}
+	data, err := sealState(m.stateKey, plaintext, []byte("sessions:"+m.selfID.String()))
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(m.statePath, data, 0o600)
+}
+
+func persistSession(s *Session) persistedSession {
+	ps := persistedSession{
+		Self:      s.self,
+		Remote:    s.remote,
+		RemoteSet: s.remoteSet,
+		RootKey:   s.rootKey,
+		Send:      s.send,
+		Recv:      s.recv,
+		PrevSendN: s.prevSendN,
+		Skipped:   make([]persistedSkipped, 0, len(s.skipped)),
+	}
+	for k, mk := range s.skipped {
+		ps.Skipped = append(ps.Skipped, persistedSkipped{
+			DH:  k.dh,
+			N:   k.n,
+			Key: mk,
+		})
+	}
+	return ps
+}
+
+func (ps persistedSession) session() *Session {
+	s := &Session{
+		self:      ps.Self,
+		remote:    ps.Remote,
+		remoteSet: ps.RemoteSet,
+		rootKey:   ps.RootKey,
+		send:      ps.Send,
+		recv:      ps.Recv,
+		prevSendN: ps.PrevSendN,
+		skipped:   make(map[skippedKey][32]byte, len(ps.Skipped)),
+	}
+	for _, entry := range ps.Skipped {
+		s.skipped[skippedKey{dh: entry.DH, n: entry.N}] = entry.Key
+	}
+	return s
 }
 
 func short(p peer.ID) string {
