@@ -1,7 +1,7 @@
-# P2P Chat Tutorial 01: System Design, Store, And Paging
+# System Design, Store, And Paging
 
-Goal: understand the app as a senior-backend system design, then be able to
-walk through the store-and-forward code without hand-waving.
+How the node fits together as a system, and how the store-and-forward path
+works end to end.
 
 ## 1. System Design Diagram
 
@@ -208,7 +208,7 @@ Interview sentence:
 
 ## 8. Code Walkthrough: Store.Put
 
-Read `node/store.go`.
+Read `internal/store/store.go`.
 
 The important path:
 
@@ -236,7 +236,7 @@ Why both `byID` and `ordered`?
 
 ## 9. Code Walkthrough: Store.Query
 
-Read `node/store.go`, then `node/storeproto.go`.
+Read `internal/store/store.go`, then `internal/node/storeproto.go`.
 
 The important path:
 
@@ -302,11 +302,11 @@ Use this answer:
 
 Next file order:
 
-1. `node/store.go`
-2. `node/storeproto.go`
-3. `node/cursor.go`
-4. `node/main.go` receive loop
-5. `node/sessions.go` content topic and decrypt path
+1. `internal/store/store.go`
+2. `internal/node/storeproto.go`
+3. `internal/store/cursor.go`
+4. `cmd/p2pchat/main.go` receive loop
+5. `internal/node/sessions.go` content topic and decrypt path
 
 Checkpoint before moving on:
 

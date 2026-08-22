@@ -1,10 +1,10 @@
 # p2p-chat Docs
 
-Tutorials:
+Design notes:
 
 1. [System Design, Store, And Paging](01-system-design-store-paging.md)
 
-Recommended reading order for the current learning phase:
+Suggested reading order:
 
 1. System design diagram.
 2. Store data model.

@@ -15,23 +15,37 @@ rather than a shallow clone of go-waku.
 ### Seeing the encryption work
 
 ```sh
-cd node
-go test -run TestDemoEavesdropper -v
+go test ./internal/crypto -run TestDemoEavesdropper -v
 ```
 
 Prints what a relaying node actually sees, then shows a stolen message key
 opening exactly one message, and replay and bit-flips being rejected.
 
+## Layout
+
+```
+cmd/p2pchat        entrypoint and the interactive loop
+internal/crypto    X25519, HKDF, symmetric chain, Double Ratchet session,
+                   long-term identity, session state encrypted at rest
+internal/store     message store, eviction, opaque sync cursors
+internal/node      libp2p host, peer book, store and filter protocols,
+                   per-peer session manager
+internal/fsatomic  atomic file writes, shared by crypto and store
+```
+
+Dependencies point one way: `node` uses `crypto` and `store`; neither of those
+knows the other exists. `Session` keeps its root and chain keys unexported and
+serialises itself, so no caller can assign a chain key directly and silently
+rewind the ratchet.
+
 ## Running the 3-node test
 
-The node source lives in `node/`. Everything below runs from there, one
-terminal per node.
+One terminal per node, all commands from the repo root.
 
 ### Setup (once per shell)
 
 ```sh
-cd node
-go build -o p2pchat .
+go build -o p2pchat ./cmd/p2pchat
 ```
 
 Rebuild after every code change. `go run .` also works but is slower to start,
@@ -125,7 +139,7 @@ at boot.
 
 ### State files, and resetting
 
-Written into `node/`, named by port:
+Written into the working directory, named by port:
 
 | File | What it holds | Delete to... |
 |---|---|---|
@@ -170,5 +184,54 @@ means re-copying multiaddrs into every terminal.
 go test ./...
 ```
 
-The crypto tests (`crypto_test.go`, `ratchet_test.go`, `session_test.go`) are
-pure unit tests and need no running nodes.
+The crypto tests in `internal/crypto` are pure unit tests and need no running
+nodes. The `internal/node` tests start real in-process libp2p hosts on loopback.
+
+## Design limitations
+
+These are known and deliberate. Each one is a place the design stops, not a
+place it was left unfinished by accident.
+
+**Key exchange is unauthenticated on first contact.** Peers learn each other's
+long-term X25519 keys from a `KeyAnnounce` broadcast. Nothing binds that key to
+a real identity, so an attacker positioned between two peers on their first
+exchange can substitute its own key and sit in the middle. Diffie-Hellman gives
+a secret channel with *somebody*; it does not say who. The mitigation is
+trust-on-first-use plus a warning when a known peer's key changes, which is the
+same position Signal is in before users compare safety numbers. X3DH with
+published prekeys is where this would be fixed properly, and it would also
+remove the requirement that both peers be online simultaneously at least once.
+
+**Broadcast costs N ciphertexts.** Sessions are pairwise, so a message to N
+peers is encrypted N times and published N times. This is the honest cost of
+every recipient having their own ratchet, and it does not scale to large group
+chats. Real group messaging uses sender keys or a tree-based construction such
+as MLS.
+
+**Metadata is not protected.** Message headers travel in the clear because the
+receiver needs the sender's ratchet public key to derive the key that would
+decrypt them. An observer learns message counts, timing, and conversation
+rhythm, though not content. Ciphertexts are addressed by pairwise content topic
+rather than by recipient peer ID, which avoids the most direct leak, but traffic
+analysis still works.
+
+**The address book only holds peers met directly.** A node learns addresses from
+connections it has actually made, so in a chain A—B—C, A never learns C's
+address. Peer exchange or DHT discovery would fix this; both were out of scope.
+
+**No spam or Sybil resistance.** Anything that connects can publish. Waku uses
+RLN for rate limiting without identities; that is deliberately not implemented
+here.
+
+**Session state at rest is only as safe as the local key.** Ratchet state is
+encrypted with `state-<port>.key`, stored beside it. That protects against
+casual disk disclosure, not against an attacker who has the machine. Persisting
+ratchet state also weakens forward secrecy: keys that would otherwise be gone
+from memory survive on disk so that store-and-forward messages remain readable
+after a restart. That is a real trade-off between availability and forward
+secrecy, resolved here in favour of availability because store-and-forward is
+the headline feature.
+
+**Store queries trust the serving peer.** A node fetching history has no way to
+verify that a peer returned everything it should have. A malicious store node
+can withhold messages silently.
