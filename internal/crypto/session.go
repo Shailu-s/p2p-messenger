@@ -27,21 +27,21 @@ const MaxSkippedKeys = 2000
 // rather than hiding -- an observer learns message counts and conversation
 // rhythm, though not content.
 type Header struct {
-	// DHPublic is the sender's current ratchet public key. When this change
-	// the receiver knows a new DH round trip has happened and reseeds.
+	// DHPublic is the sender's current ratchet public key. When it changes,
+	// the receiver knows a DH step has happened and reseeds.
 	DHPublic [32]byte `json:"dh"`
 
 	// N is this message's index in the current sending chain.
 	N uint32 `json:"n"`
 
-	// PN is how many messages the sender sent in the PREVIOUS chain, before
-	// the last DH step. Without it, a receiver that missed the tail of the
-	// chain could never work out how many keys to skip before switching ove
+	// PN is how many messages went out on the previous chain, before the
+	// last DH step. Without it, a receiver that missed the tail of that
+	// chain could not tell how many keys to skip before switching over.
 	PN uint32 `json:"pn"`
 }
 
-// Session is one pairwise conversation. Two of these exist per pair -- one on
-// each side -- and they mirror each other.
+// Session is one pairwise conversation. Two exist per pair, one on each side,
+// mirroring each other.
 type Session struct {
 	// Our current ratchet key pair. Replaced on every DH step we initiate.
 	self KeyPair
@@ -50,21 +50,21 @@ type Session struct {
 	remote    [32]byte
 	remoteSet bool
 
-	// rootKey is the trunk. Each DH step feeds it a fresh shared secret, an
-	// produces the seed for a new chain. This is where new randomness enter
-	// the system -- the thing the symmetric chain alone cannot do.
+	// rootKey is the trunk. Each DH step feeds it a fresh shared secret and
+	// produces the seed for a new chain. This is where new randomness
+	// enters the system, which the symmetric chain alone cannot do.
 	rootKey [32]byte
 
 	send *Chain // keys for messages we send
 	recv *Chain // keys for messages we receive
 
-	// prevSendN is how many messages went out on the previous sending chain
-	// Sent as Header.PN so the far side can catch up on stragglers.
+	// prevSendN is how many messages went out on the previous sending
+	// chain. Sent as Header.PN so the far side can catch up on stragglers.
 	prevSendN uint32
 
-	// skipped holds message keys derived early, for messages that have not
-	// arrived yet. Keyed by (their ratchet public key, N) because N alone
-	// repeats across chains.
+	// skipped holds message keys derived ahead of time for messages that
+	// have not arrived. Keyed by (their ratchet public key, N), because N
+	// alone repeats across chains.
 	skipped map[skippedKey][32]byte
 }
 
@@ -75,9 +75,9 @@ type skippedKey struct {
 
 // NewSessionInitiator starts a session as the side that speaks first.
 //
-// It needs the other side's public key in advance -- which is exactly the
-// problem X3DH solves properly with published prekeys. For now we hand it over
-// directly and note the gap.
+// It needs the other side's public key in advance, which is the problem X3DH
+// solves properly with published prekeys. Here the key is handed over
+// directly; the gap is noted rather than hidden.
 func NewSessionInitiator(shared [32]byte, theirPub [32]byte) (*Session, error) {
 	self, err := GenerateKeyPair()
 	if err != nil {
@@ -170,9 +170,9 @@ func (s *Session) EncryptMessage(plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// The header is passed as associated data: authenticated, not encrypted
-	// An attacker who edits N or PN in transit makes decryption fail rather
-	// than silently steering the receiver to the wrong key.
+	// The header is associated data: authenticated but not encrypted. An
+	// attacker who edits N or PN in transit makes decryption fail rather
+	// than silently steering the receiver to a different key.
 	ct, err := Encrypt(msgKey, plaintext, hBytes)
 	if err != nil {
 		return nil, err
@@ -206,13 +206,13 @@ func (s *Session) DecryptMessage(wire []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Used once, then destroyed -- keeping it would undo forward se
+		// Used once, then destroyed: keeping it would undo forward secrecy.
 		delete(s.skipped, k)
 		return pt, nil
 	}
 
-	// 2. Their ratchet key changed: they performed a DH step. Before follow
-	//    them, cache keys for any stragglers still owed on the OLD chain --
+	// 2. Their ratchet key changed, so they performed a DH step. Before
+	//    following, cache keys for stragglers still owed on the old chain;
 	//    Header.PN says how many that chain produced in total.
 	if !s.remoteSet || env.Header.DHPublic != s.remote {
 		if err := s.skipTo(env.Header.PN); err != nil {
@@ -244,8 +244,8 @@ func (s *Session) DecryptMessage(wire []byte) ([]byte, error) {
 		return nil, errors.New("no receiving chain")
 	}
 
-	// 3. This message is ahead of where our chain sits: derive and cache th
-	//    keys for the ones we skipped, then take this one.
+	// 3. This message is ahead of our chain: derive and cache the keys for
+	//    the ones skipped, then take this one.
 	if err := s.skipTo(env.Header.N); err != nil {
 		return nil, err
 	}
@@ -267,8 +267,8 @@ func (s *Session) skipTo(until uint32) error {
 		return nil // nothing to skip
 	}
 
-	// THE DoS CHECK. A hostile header claiming a huge N would otherwise spi
-	// here deriving keys until the process dies.
+	// The DoS check. A hostile header claiming a huge N would otherwise
+	// spin here deriving keys until the process dies.
 	if until-s.recv.N > MaxSkip {
 		return fmt.Errorf("skip of %d exceeds MaxSkip %d", until-s.recv.N, MaxSkip)
 	}

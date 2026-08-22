@@ -14,48 +14,45 @@ type KeyPair struct {
 	Public  [32]byte
 }
 
-// GenerateKeyPair creates a new X25519 key pair from the OS random source.
-// The private key is just 32 random bytes. There is no cleverness to it: the
-// security comes from the size of the space (2^256), not from structure.
+// GenerateKeyPair creates an X25519 key pair from the OS random source.
+// The private key is 32 random bytes; its security comes from the size of the
+// space, not from any structure.
 func GenerateKeyPair() (KeyPair, error) {
 	var kp KeyPair
 
-	// crypto/rand, never math/rand. math/rand is seeded predictably and wou
-	// make every key on the network guessable.
+	// crypto/rand, never math/rand: math/rand is predictably seeded, which
+	// would make every key on the network guessable.
 	if _, err := io.ReadFull(rand.Reader, kp.Private[:]); err != nil {
 		return KeyPair{}, err
 	}
 
-	// Public = Private * Basepoint on Curve25519. Basepoint is a fixed publ
-	// constant that everyone in the world uses, which is what makes two
-	// independently generated public keys comparable at all.
+	// Public = Private * Basepoint. Basepoint is a fixed public constant
+	// shared by every X25519 implementation, which is what makes two
+	// independently generated public keys usable together.
 	pub, err := curve25519.X25519(kp.Private[:], curve25519.Basepoint)
 	if err != nil {
 		return KeyPair{}, err
 	}
 
-	// X25519 returns a []byte; copy it into the fixed-size field.
 	copy(kp.Public[:], pub)
 	return kp, nil
 }
 
 // DH performs the Diffie-Hellman operation: my private key against their
-// public key.
-//
-// The property that makes this useful:
+// public key. Both sides arrive at the same 32 bytes without ever
+// transmitting them:
 //
 //	DH(alice.Private, bob.Public) == DH(bob.Private, alice.Public)
 //
-// Both sides compute the same 32 bytes, and that value was never transmitted.
-// An eavesdropper who saw both public keys cannot compute it.
+// An eavesdropper who saw both public keys cannot derive the result.
 func DH(myPriv [32]byte, theirPub [32]byte) ([32]byte, error) {
 	var shared [32]byte
 
 	secret, err := curve25519.X25519(myPriv[:], theirPub[:])
 	if err != nil {
-		// X25519 returns an error for low-order points: a hostile peer
-		// a crafted public key that forces the shared secret to a known
-		// Rejecting here is the defence, so this error must never be sw
+		// X25519 rejects low-order points. A hostile peer can send a
+		// crafted public key that forces the shared secret to a known
+		// constant, so this error must never be swallowed.
 		return shared, err
 	}
 
@@ -63,26 +60,23 @@ func DH(myPriv [32]byte, theirPub [32]byte) ([32]byte, error) {
 	return shared, nil
 }
 
-// kdf expands a secret into `outputs` independent 32-byte keys.
+// KDF expands a secret into `outputs` independent 32-byte keys.
 //
-// Why more than one output: the ratchet needs TWO keys from a single input --
-// the next chain key and this message's key -- and they must be independent.
-// Reading 64 bytes from one HKDF stream gives exactly that: knowing the second
-// 32 bytes tells you nothing about the first.
+// The ratchet needs two keys from one input -- the next chain key and this
+// message's key -- and they must be independent. Successive bytes of one HKDF
+// stream give exactly that.
 //
-// `info` is a domain separator. The same secret with info "chain" and info
-// "message" produces unrelated keys. Reusing one info string for different
-// purposes collapses that separation, so every call site passes its own.
+// info is a domain separator: the same secret under different info strings
+// yields unrelated keys, so every call site passes its own.
 func KDF(secret []byte, info string, outputs int) ([][32]byte, error) {
-	// salt is nil: our inputs are already uniformly random (DH output or a
-	// previous KDF output), which is the case where HKDF's salt adds nothin
+	// salt is nil: the inputs are already uniformly random (a DH output or a
+	// previous KDF output), the case where HKDF's salt adds nothing.
 	r := hkdf.New(sha256.New, secret, nil, []byte(info))
 
 	keys := make([][32]byte, outputs)
 	for i := range keys {
-		// io.ReadFull, not r.Read. A bare Read may return fewer bytes t
-		// buffer length, and a short read here means a key with predict
-		// zero bytes at the end.
+		// io.ReadFull, not r.Read: a short read would leave predictable
+		// zero bytes at the end of a key.
 		if _, err := io.ReadFull(r, keys[i][:]); err != nil {
 			return nil, err
 		}

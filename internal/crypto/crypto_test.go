@@ -30,8 +30,9 @@ func TestDHAgreement(t *testing.T) {
 		t.Fatal("DH disagreement: the two sides derived different secret")
 	}
 
-	// A shared secret of all zeros means the curve operation silently faile
-	// Equality alone would still pass in that case, so check its explicitly.
+	// A shared secret of all zeros would mean the curve operation silently
+	// failed. Equality alone would still pass in that case, so check for it
+	// explicitly.
 	var zero [32]byte
 	if fromAlice == zero {
 		t.Fatal("shared secret is all zeros")
