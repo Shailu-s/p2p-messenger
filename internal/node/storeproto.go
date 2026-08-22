@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -9,16 +9,18 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"p2pchat/internal/store"
 )
 
 const StoreProtocol = "/chat/store/1.0.0"
 
 // RegisterStoreServer answers history queries from other nodes.
-func RegisterStoreServer(h host.Host, s *Store) {
+func RegisterStoreServer(h host.Host, s *store.Store) {
 	h.SetStreamHandler(StoreProtocol, func(stream network.Stream) {
 		defer stream.Close()
 
-		var q StoreQuery
+		var q store.StoreQuery
 		if err := json.NewDecoder(stream).Decode(&q); err != nil {
 			return
 		}
@@ -34,7 +36,7 @@ func RegisterStoreServer(h host.Host, s *Store) {
 	})
 }
 
-func FetchFromAllPeers(ctx context.Context, h host.Host, s *Store, cursors *CursorBook, topics []string, sm *SessionManager) {
+func FetchFromAllPeers(ctx context.Context, h host.Host, s *store.Store, cursors *store.CursorBook, topics []string, sm *SessionManager) {
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
 		fmt.Println("[history] no peers to ask")
@@ -81,24 +83,24 @@ func FetchFromAllPeers(ctx context.Context, h host.Host, s *Store, cursors *Curs
 		len(peers), total, added, s.Count())
 }
 
-func FetchHistory(ctx context.Context, h host.Host, p peer.ID, topic, cursor string) (StoreResponse, error) {
+func FetchHistory(ctx context.Context, h host.Host, p peer.ID, topic, cursor string) (store.StoreResponse, error) {
 	stream, err := h.NewStream(ctx, p, StoreProtocol)
 	if err != nil {
-		return StoreResponse{}, err
+		return store.StoreResponse{}, err
 	}
 	defer stream.Close()
 
-	q := StoreQuery{Topic: topic, Cursor: cursor, Limit: 100}
+	q := store.StoreQuery{Topic: topic, Cursor: cursor, Limit: 100}
 	if err := json.NewEncoder(stream).Encode(q); err != nil {
-		return StoreResponse{}, err
+		return store.StoreResponse{}, err
 	}
 
-	var resp StoreResponse
+	var resp store.StoreResponse
 	if err := json.NewDecoder(stream).Decode(&resp); err != nil {
-		return StoreResponse{}, err
+		return store.StoreResponse{}, err
 	}
 	if resp.Error != "" {
-		return StoreResponse{}, errors.New(resp.Error)
+		return store.StoreResponse{}, errors.New(resp.Error)
 	}
 	return resp, nil
 }

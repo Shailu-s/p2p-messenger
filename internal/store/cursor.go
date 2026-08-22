@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"p2pchat/internal/fsatomic"
 )
 
 type CursorBook struct {
@@ -79,5 +81,5 @@ func (b *CursorBook) Update(p peer.ID, topic, cursor string) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(b.path, data, 0o600)
+	return fsatomic.WriteFile(b.path, data, 0o600)
 }

@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"crypto/rand"
@@ -8,6 +8,8 @@ import (
 	"os"
 
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"p2pchat/internal/fsatomic"
 )
 
 type encryptedState struct {
@@ -16,7 +18,7 @@ type encryptedState struct {
 	Ciphertext []byte `json:"ciphertext"`
 }
 
-func loadOrCreateStateKey(path string) ([32]byte, error) {
+func LoadOrCreateStateKey(path string) ([32]byte, error) {
 	var key [32]byte
 
 	data, err := os.ReadFile(path)
@@ -24,7 +26,7 @@ func loadOrCreateStateKey(path string) ([32]byte, error) {
 		if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
 			return key, err
 		}
-		if err := writeFileAtomic(path, key[:], 0o600); err != nil {
+		if err := fsatomic.WriteFile(path, key[:], 0o600); err != nil {
 			return key, err
 		}
 		return key, nil
@@ -39,7 +41,7 @@ func loadOrCreateStateKey(path string) ([32]byte, error) {
 	return key, nil
 }
 
-func sealState(key [32]byte, plaintext, ad []byte) ([]byte, error) {
+func SealState(key [32]byte, plaintext, ad []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
 		return nil, err
@@ -56,7 +58,7 @@ func sealState(key [32]byte, plaintext, ad []byte) ([]byte, error) {
 	return json.MarshalIndent(disk, "", "  ")
 }
 
-func openState(key [32]byte, data, ad []byte) ([]byte, error) {
+func OpenState(key [32]byte, data, ad []byte) ([]byte, error) {
 	var disk encryptedState
 	if err := json.Unmarshal(data, &disk); err != nil {
 		return nil, err

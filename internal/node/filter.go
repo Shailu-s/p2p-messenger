@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -7,8 +7,10 @@ import (
 	"fmt"
 
 	"github.com/libp2p/go-libp2p/core/host"
+
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"p2pchat/internal/store"
 )
 
 const FilterProtocol = "/chat/filter/1.0.0"
@@ -20,12 +22,12 @@ type FilterRequest struct {
 }
 
 type FilterEvent struct {
-	Ready   bool           `json:"ready,omitempty"`
-	Message *StoredMessage `json:"message,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	Ready   bool                 `json:"ready,omitempty"`
+	Message *store.StoredMessage `json:"message,omitempty"`
+	Error   string               `json:"error,omitempty"`
 }
 
-func RegisterFilterServer(h host.Host, s *Store) {
+func RegisterFilterServer(h host.Host, s *store.Store) {
 	h.SetStreamHandler(FilterProtocol, func(stream network.Stream) {
 		defer stream.Close()
 
@@ -44,9 +46,9 @@ func RegisterFilterServer(h host.Host, s *Store) {
 			topics = nil
 		}
 		if req.All {
-			fmt.Printf("\n[filter] %s subscribed to all topics\n", short(stream.Conn().RemotePeer()))
+			fmt.Printf("\n[filter] %s subscribed to all topics\n", Short(stream.Conn().RemotePeer()))
 		} else {
-			fmt.Printf("\n[filter] %s subscribed to %d topics\n", short(stream.Conn().RemotePeer()), len(topics))
+			fmt.Printf("\n[filter] %s subscribed to %d topics\n", Short(stream.Conn().RemotePeer()), len(topics))
 		}
 
 		updates, cancel := s.Subscribe(topics)
@@ -70,7 +72,7 @@ func RegisterFilterServer(h host.Host, s *Store) {
 	})
 }
 
-func SubscribeFilter(ctx context.Context, h host.Host, p peer.ID, req FilterRequest) (<-chan StoredMessage, error) {
+func SubscribeFilter(ctx context.Context, h host.Host, p peer.ID, req FilterRequest) (<-chan store.StoredMessage, error) {
 	if !req.All && len(req.Topics) == 0 {
 		return nil, errors.New("filter requires topics or all=true")
 	}
@@ -100,7 +102,7 @@ func SubscribeFilter(ctx context.Context, h host.Host, p peer.ID, req FilterRequ
 		}
 	}
 
-	out := make(chan StoredMessage, 32)
+	out := make(chan store.StoredMessage, 32)
 	go func() {
 		defer close(out)
 		defer stream.Close()

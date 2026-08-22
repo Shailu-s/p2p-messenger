@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"encoding/hex"
@@ -14,13 +14,13 @@ import (
 // curve), but keeping a separate file is clearer and avoids using one key for
 // two purposes, which is a rule worth following by default.
 
-// loadOrCreateIdentity returns this node's long-term X25519 key pair, creating
+// LoadOrCreateIdentity returns this node's long-term X25519 key pair, creating
 // and persisting it on first run.
 //
 // "Long-term" matters: this key is the anchor a peer uses to start a session
 // with us. The per-message ratchet keys are ephemeral and never touch disk;
 // only this one is stable across restarts.
-func loadOrCreateIdentity(path string) (KeyPair, error) {
+func LoadOrCreateIdentity(path string) (KeyPair, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		var kp KeyPair

@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import "golang.org/x/crypto/chacha20poly1305"
 
@@ -26,7 +26,7 @@ type Chain struct {
 // DH output never doubles as a working key. If a chain key later leaks, it
 // reveals nothing about the DH secret that produced it.
 func NewChain(seed [32]byte) (*Chain, error) {
-	keys, err := kdf(seed[:], "chain-init", 1)
+	keys, err := KDF(seed[:], "chain-init", 1)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (c *Chain) Next() ([32]byte, uint32, error) {
 	//   keys[1] -> this message's key  (a dead end, used once)
 	// They are independent because HKDF output bytes reveal nothing about e
 	// other, so leaking the message key does not expose the chain.
-	keys, err := kdf(c.Key[:], "chain-step", 2)
+	keys, err := KDF(c.Key[:], "chain-step", 2)
 	if err != nil {
 		return [32]byte{}, 0, err
 	}

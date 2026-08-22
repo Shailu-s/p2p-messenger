@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"encoding/json"
@@ -130,7 +130,7 @@ func (s *Session) dhStep(theirPub [32]byte, sending bool) error {
 	// Two outputs: a new root key, and the seed for the new chain. Deriving
 	// the root forward means an attacker who learns one chain seed still
 	// cannot walk back up the trunk.
-	keys, err := kdf(append(s.rootKey[:], shared[:]...), "dh-ratchet", 2)
+	keys, err := KDF(append(s.rootKey[:], shared[:]...), "dh-ratchet", 2)
 	if err != nil {
 		return err
 	}
@@ -282,6 +282,71 @@ func (s *Session) skipTo(until uint32) error {
 			return errors.New("skipped-key cache full")
 		}
 		s.skipped[skippedKey{dh: s.remote, n: n}] = mk
+	}
+	return nil
+}
+
+// persistedSession is the on-disk shape of a Session.
+//
+// Session keeps its fields unexported: a caller that could set rootKey or a
+// chain key directly could silently rewind the ratchet and destroy forward
+// secrecy. Serialisation therefore lives here rather than in the caller, and
+// the state leaves this package only as opaque, already-encrypted bytes.
+type persistedSession struct {
+	Self      KeyPair            `json:"self"`
+	Remote    [32]byte           `json:"remote"`
+	RemoteSet bool               `json:"remoteSet"`
+	RootKey   [32]byte           `json:"rootKey"`
+	Send      *Chain             `json:"send"`
+	Recv      *Chain             `json:"recv"`
+	PrevSendN uint32             `json:"prevSendN"`
+	Skipped   []persistedSkipped `json:"skipped"`
+}
+
+// persistedSkipped flattens the skipped-key map, whose composite struct key
+// cannot be a JSON object key.
+type persistedSkipped struct {
+	DH  [32]byte `json:"dh"`
+	N   uint32   `json:"n"`
+	Key [32]byte `json:"key"`
+}
+
+// MarshalJSON serialises the full ratchet state, including undelivered skipped
+// message keys -- dropping those would make already-stored ciphertext
+// permanently unreadable after a restart.
+func (s *Session) MarshalJSON() ([]byte, error) {
+	ps := persistedSession{
+		Self:      s.self,
+		Remote:    s.remote,
+		RemoteSet: s.remoteSet,
+		RootKey:   s.rootKey,
+		Send:      s.send,
+		Recv:      s.recv,
+		PrevSendN: s.prevSendN,
+		Skipped:   make([]persistedSkipped, 0, len(s.skipped)),
+	}
+	for k, mk := range s.skipped {
+		ps.Skipped = append(ps.Skipped, persistedSkipped{DH: k.dh, N: k.n, Key: mk})
+	}
+	return json.Marshal(ps)
+}
+
+// UnmarshalJSON restores a session written by MarshalJSON.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	var ps persistedSession
+	if err := json.Unmarshal(data, &ps); err != nil {
+		return err
+	}
+	s.self = ps.Self
+	s.remote = ps.Remote
+	s.remoteSet = ps.RemoteSet
+	s.rootKey = ps.RootKey
+	s.send = ps.Send
+	s.recv = ps.Recv
+	s.prevSendN = ps.PrevSendN
+	s.skipped = make(map[skippedKey][32]byte, len(ps.Skipped))
+	for _, e := range ps.Skipped {
+		s.skipped[skippedKey{dh: e.DH, n: e.N}] = e.Key
 	}
 	return nil
 }

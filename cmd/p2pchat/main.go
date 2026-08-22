@@ -13,6 +13,10 @@ import (
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	cryptolib "p2pchat/internal/crypto"
+	"p2pchat/internal/node"
+	"p2pchat/internal/store"
 )
 
 func main() {
@@ -34,7 +38,7 @@ func runFull(ctx context.Context, args []string) {
 	}
 	port := args[0]
 
-	priv, err := loadOrCreateKey("node-" + port + ".key")
+	priv, err := node.LoadOrCreateKey("node-" + port + ".key")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,24 +66,24 @@ func runFull(ctx context.Context, args []string) {
 		log.Fatal(err)
 	}
 
-	store, err := OpenStore("store-"+port+".json", 1000)
+	msgStore, err := store.OpenStore("store-"+port+".json", 1000)
 	if err != nil {
 		log.Fatal(err)
 	}
-	cursors, err := OpenCursorBook("cursors-" + port + ".json")
+	cursors, err := store.OpenCursorBook("cursors-" + port + ".json")
 	if err != nil {
 		log.Fatal(err)
 	}
-	RegisterStoreServer(host, store)
-	RegisterFilterServer(host, store)
+	node.RegisterStoreServer(host, msgStore)
+	node.RegisterFilterServer(host, msgStore)
 
 	// Long-term X25519 identity for encryption. Separate from the libp2p
 	// Ed25519 host key: that one signs, this one does Diffie-Hellman.
-	ident, err := loadOrCreateIdentity("ident-" + port + ".x25519")
+	ident, err := cryptolib.LoadOrCreateIdentity("ident-" + port + ".x25519")
 	if err != nil {
 		log.Fatal(err)
 	}
-	sm, err := OpenSessionManager(ident, host.ID(), "sessions-"+port+".json.enc", "state-"+port+".key")
+	sm, err := node.OpenSessionManager(ident, host.ID(), "sessions-"+port+".json.enc", "state-"+port+".key")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -106,7 +110,7 @@ func runFull(ctx context.Context, args []string) {
 			if msg.GetFrom() == host.ID() {
 				continue
 			}
-			var ka KeyAnnounce
+			var ka node.KeyAnnounce
 			if err := json.Unmarshal(msg.Data, &ka); err != nil {
 				continue
 			}
@@ -115,7 +119,7 @@ func runFull(ctx context.Context, args []string) {
 				continue
 			}
 			if sm.LearnKey(p, ka.PublicKey) {
-				fmt.Printf("\n[crypto] learned key for %s (%x)\n", short(p), ka.PublicKey[:6])
+				fmt.Printf("\n[crypto] learned key for %s (%x)\n", node.Short(p), ka.PublicKey[:6])
 			}
 		}
 	}()
@@ -124,7 +128,7 @@ func runFull(ctx context.Context, args []string) {
 	// on every peer that starts later -- the same lesson as KeepConnected:
 	// in a P2P network, presence is continuous, not a startup event.
 	go func() {
-		ka, _ := json.Marshal(KeyAnnounce{PeerID: host.ID().String(), PublicKey: ident.Public})
+		ka, _ := json.Marshal(node.KeyAnnounce{PeerID: host.ID().String(), PublicKey: ident.Public})
 		for {
 			keyTopic.Publish(ctx, ka)
 			time.Sleep(5 * time.Second)
@@ -139,8 +143,8 @@ func runFull(ctx context.Context, args []string) {
 			}
 			isMine := msg.GetFrom() == host.ID()
 
-			m := StoredMessage{
-				ID:        MessageID(msg.Data),
+			m := store.StoredMessage{
+				ID:        store.MessageID(msg.Data),
 				Topic:     messageStoreTopic(msg.Data),
 				Timestamp: time.Now().UnixMilli(),
 				Payload:   msg.Data,
@@ -149,29 +153,29 @@ func runFull(ctx context.Context, args []string) {
 			// Store FIRST, unconditionally, before knowing whether we can read
 			// it. This is the whole point of store-and-forward: we hold mail
 			// for peers whose content is none of our business.
-			stored, err := store.Put(m)
+			stored, err := msgStore.Put(m)
 			if err != nil {
 				fmt.Printf("\n[store] write failed: %v\n", err)
 				continue
 			}
 
 			if isMine {
-				fmt.Printf("[stored: %d]\n", store.Count())
+				fmt.Printf("[stored: %d]\n", msgStore.Count())
 				continue
 			}
 			if !stored {
-				fmt.Printf("\n(duplicate ignored: %s)[stored: %d]\n", m.ID[:8], store.Count())
+				fmt.Printf("\n(duplicate ignored: %s)[stored: %d]\n", m.ID[:8], msgStore.Count())
 				continue
 			}
 
 			if pt, ok := sm.TryDecrypt(msg.Data); ok {
-				fmt.Printf("\n[%s] %s", short(msg.GetFrom()), string(pt))
+				fmt.Printf("\n[%s] %s", node.Short(msg.GetFrom()), string(pt))
 			} else {
 				// Not ours to read. We relay and store it anyway.
 				fmt.Printf("\n[opaque] %d bytes from %s, not for me",
-					len(msg.Data), short(msg.GetFrom()))
+					len(msg.Data), node.Short(msg.GetFrom()))
 			}
-			fmt.Printf("[stored: %d]\n", store.Count())
+			fmt.Printf("[stored: %d]\n", msgStore.Count())
 		}
 	}()
 	fmt.Println("my ID:", host.ID())
@@ -180,7 +184,7 @@ func runFull(ctx context.Context, args []string) {
 	}
 
 	// 4. remember who we meet, so a restart can rejoin without arguments
-	book := newPeerBook("peers-" + port + ".json")
+	book := node.NewPeerBook("peers-" + port + ".json")
 	book.Watch(host) // learn about peers that dial US, not just ones we dial
 
 	// dial the peer given on the command line, if any
@@ -207,7 +211,7 @@ func runFull(ctx context.Context, args []string) {
 			time.Sleep(3 * time.Second)
 			topics := sm.KnownContentTopics()
 			if len(host.Network().Peers()) > 0 && len(topics) > 0 {
-				FetchFromAllPeers(ctx, host, store, cursors, topics, sm)
+				node.FetchFromAllPeers(ctx, host, msgStore, cursors, topics, sm)
 				return
 			}
 		}
@@ -251,14 +255,14 @@ func runLight(ctx context.Context, args []string) {
 	fullAddr := args[1]
 	topicArgs := args[2:]
 
-	req := FilterRequest{}
+	req := node.FilterRequest{}
 	if len(topicArgs) == 1 && topicArgs[0] == "--all" {
 		req.All = true
 	} else {
 		req.Topics = topicArgs
 	}
 
-	priv, err := loadOrCreateKey("node-" + port + ".key")
+	priv, err := node.LoadOrCreateKey("node-" + port + ".key")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -279,14 +283,14 @@ func runLight(ctx context.Context, args []string) {
 		log.Fatal(err)
 	}
 
-	updates, err := SubscribeFilter(ctx, host, info.ID, req)
+	updates, err := node.SubscribeFilter(ctx, host, info.ID, req)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if req.All {
-		fmt.Println("[light] subscribed to all topics from", short(info.ID))
+		fmt.Println("[light] subscribed to all topics from", node.Short(info.ID))
 	} else {
-		fmt.Printf("[light] subscribed to %d topics from %s\n", len(req.Topics), short(info.ID))
+		fmt.Printf("[light] subscribed to %d topics from %s\n", len(req.Topics), node.Short(info.ID))
 	}
 	for m := range updates {
 		fmt.Printf("\n[filter] %s %d bytes\n", m.Topic, len(m.Payload))
@@ -294,7 +298,7 @@ func runLight(ctx context.Context, args []string) {
 }
 
 func messageStoreTopic(payload []byte) string {
-	if topic, ok := EnvelopeContentTopic(payload); ok {
+	if topic, ok := node.EnvelopeContentTopic(payload); ok {
 		return topic
 	}
 	return "chat-room"

@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	cryptolib "p2pchat/internal/crypto"
 )
 
 func testPeerID(t *testing.T) peer.ID {
@@ -25,7 +27,7 @@ func testPeerID(t *testing.T) peer.ID {
 	return id
 }
 
-func persistentManager(t *testing.T, dir string, id peer.ID, self KeyPair) *SessionManager {
+func persistentManager(t *testing.T, dir string, id peer.ID, self cryptolib.KeyPair) *SessionManager {
 	t.Helper()
 
 	m, err := OpenSessionManager(
@@ -45,8 +47,8 @@ func TestSessionManagerPersistsRatchetStateAcrossRestart(t *testing.T) {
 	ids := testPeerIDsWithAliceInitiator(t)
 	aliceID := ids.alice
 	bobID := ids.bob
-	aliceKey, _ := GenerateKeyPair()
-	bobKey, _ := GenerateKeyPair()
+	aliceKey, _ := cryptolib.GenerateKeyPair()
+	bobKey, _ := cryptolib.GenerateKeyPair()
 
 	alice := persistentManager(t, dir, aliceID, aliceKey)
 	bob := persistentManager(t, dir, bobID, bobKey)
@@ -78,8 +80,8 @@ func TestSessionManagerStateFileIsEncrypted(t *testing.T) {
 	ids := testPeerIDsWithAliceInitiator(t)
 	aliceID := ids.alice
 	bobID := ids.bob
-	aliceKey, _ := GenerateKeyPair()
-	bobKey, _ := GenerateKeyPair()
+	aliceKey, _ := cryptolib.GenerateKeyPair()
+	bobKey, _ := cryptolib.GenerateKeyPair()
 
 	alice := persistentManager(t, dir, aliceID, aliceKey)
 	alice.LearnKey(bobID, bobKey.Public)
@@ -98,8 +100,8 @@ func TestSessionManagerStateFileIsEncrypted(t *testing.T) {
 
 func TestHigherPeerIDCanSendFirst(t *testing.T) {
 	ids := testPeerIDsWithAliceAfterBob(t)
-	aliceKey, _ := GenerateKeyPair()
-	bobKey, _ := GenerateKeyPair()
+	aliceKey, _ := cryptolib.GenerateKeyPair()
+	bobKey, _ := cryptolib.GenerateKeyPair()
 	alice := NewSessionManager(aliceKey, ids.alice)
 	bob := NewSessionManager(bobKey, ids.bob)
 	alice.LearnKey(ids.bob, bobKey.Public)

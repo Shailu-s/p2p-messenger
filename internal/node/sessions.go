@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"encoding/hex"
@@ -9,6 +9,9 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"p2pchat/internal/crypto"
+	"p2pchat/internal/fsatomic"
 )
 
 // KeyAnnounce is broadcast on a separate topic so peers can learn each other's
@@ -40,9 +43,9 @@ type AddressedEnvelope struct {
 // messages remain decryptable after a restart.
 type SessionManager struct {
 	mu       sync.Mutex
-	self     KeyPair
+	self     crypto.KeyPair
 	selfID   peer.ID
-	sessions map[peer.ID]*Session
+	sessions map[peer.ID]*crypto.Session
 	keys     map[peer.ID][32]byte // long-term keys learned from announcements
 
 	statePath string
@@ -51,40 +54,23 @@ type SessionManager struct {
 }
 
 type persistedSessionManager struct {
-	Version  int                         `json:"version"`
-	Keys     map[string][32]byte         `json:"keys"`
-	Sessions map[string]persistedSession `json:"sessions"`
+	Version  int                        `json:"version"`
+	Keys     map[string][32]byte        `json:"keys"`
+	Sessions map[string]*crypto.Session `json:"sessions"`
 }
 
-type persistedSession struct {
-	Self      KeyPair            `json:"self"`
-	Remote    [32]byte           `json:"remote"`
-	RemoteSet bool               `json:"remoteSet"`
-	RootKey   [32]byte           `json:"rootKey"`
-	Send      *Chain             `json:"send"`
-	Recv      *Chain             `json:"recv"`
-	PrevSendN uint32             `json:"prevSendN"`
-	Skipped   []persistedSkipped `json:"skipped"`
-}
-
-type persistedSkipped struct {
-	DH  [32]byte `json:"dh"`
-	N   uint32   `json:"n"`
-	Key [32]byte `json:"key"`
-}
-
-func NewSessionManager(self KeyPair, id peer.ID) *SessionManager {
+func NewSessionManager(self crypto.KeyPair, id peer.ID) *SessionManager {
 	return &SessionManager{
 		self:     self,
 		selfID:   id,
-		sessions: make(map[peer.ID]*Session),
+		sessions: make(map[peer.ID]*crypto.Session),
 		keys:     make(map[peer.ID][32]byte),
 	}
 }
 
-func OpenSessionManager(self KeyPair, id peer.ID, statePath, stateKeyPath string) (*SessionManager, error) {
+func OpenSessionManager(self crypto.KeyPair, id peer.ID, statePath, stateKeyPath string) (*SessionManager, error) {
 	m := NewSessionManager(self, id)
-	key, err := loadOrCreateStateKey(stateKeyPath)
+	key, err := crypto.LoadOrCreateStateKey(stateKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +85,7 @@ func OpenSessionManager(self KeyPair, id peer.ID, statePath, stateKeyPath string
 	if err != nil {
 		return nil, err
 	}
-	plaintext, err := openState(key, data, []byte("sessions:"+id.String()))
+	plaintext, err := crypto.OpenState(key, data, []byte("sessions:"+id.String()))
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +106,7 @@ func OpenSessionManager(self KeyPair, id peer.ID, statePath, stateKeyPath string
 		if err != nil {
 			continue
 		}
-		m.sessions[p] = ps.session()
+		m.sessions[p] = ps
 	}
 	return m, nil
 }
@@ -136,7 +122,7 @@ func (m *SessionManager) LearnKey(p peer.ID, pk [32]byte) bool {
 		// out-of-band verification -- which is exactly what Signal's safety
 		// numbers are for. We log and accept; a real system would warn.
 		if existing != pk {
-			fmt.Printf("\n[crypto] WARNING: %s changed its identity key\n", short(p))
+			fmt.Printf("\n[crypto] WARNING: %s changed its identity key\n", Short(p))
 			m.keys[p] = pk
 			delete(m.sessions, p) // old session is meaningless now
 			if err := m.persistLocked(); err != nil {
@@ -189,35 +175,35 @@ func (m *SessionManager) ContentTopic(p peer.ID) (string, error) {
 func (m *SessionManager) contentTopicLocked(p peer.ID) (string, error) {
 	theirKey, ok := m.keys[p]
 	if !ok {
-		return "", fmt.Errorf("no key known for %s", short(p))
+		return "", fmt.Errorf("no key known for %s", Short(p))
 	}
-	shared, err := DH(m.self.Private, theirKey)
+	shared, err := crypto.DH(m.self.Private, theirKey)
 	if err != nil {
 		return "", err
 	}
-	keys, err := kdf(shared[:], "content-topic", 1)
+	keys, err := crypto.KDF(shared[:], "content-topic", 1)
 	if err != nil {
 		return "", err
 	}
 	return "/chat/2/" + hex.EncodeToString(keys[0][:16]), nil
 }
 
-func (m *SessionManager) sendingSession(p peer.ID) (*Session, error) {
+func (m *SessionManager) sendingSession(p peer.ID) (*crypto.Session, error) {
 	if s, ok := m.sessions[p]; ok {
 		return s, nil
 	}
 
 	theirKey, ok := m.keys[p]
 	if !ok {
-		return nil, fmt.Errorf("no key known for %s", short(p))
+		return nil, fmt.Errorf("no key known for %s", Short(p))
 	}
 
-	shared, err := DH(m.self.Private, theirKey)
+	shared, err := crypto.DH(m.self.Private, theirKey)
 	if err != nil {
 		return nil, err
 	}
 
-	s, err := NewSessionInitiator(shared, theirKey)
+	s, err := crypto.NewSessionInitiator(shared, theirKey)
 	if err != nil {
 		return nil, err
 	}
@@ -225,22 +211,22 @@ func (m *SessionManager) sendingSession(p peer.ID) (*Session, error) {
 	return s, nil
 }
 
-func (m *SessionManager) receivingSession(p peer.ID) (*Session, error) {
+func (m *SessionManager) receivingSession(p peer.ID) (*crypto.Session, error) {
 	if s, ok := m.sessions[p]; ok {
 		return s, nil
 	}
 
 	theirKey, ok := m.keys[p]
 	if !ok {
-		return nil, fmt.Errorf("no key known for %s", short(p))
+		return nil, fmt.Errorf("no key known for %s", Short(p))
 	}
 
-	shared, err := DH(m.self.Private, theirKey)
+	shared, err := crypto.DH(m.self.Private, theirKey)
 	if err != nil {
 		return nil, err
 	}
 
-	s := NewSessionResponder(shared, m.self)
+	s := crypto.NewSessionResponder(shared, m.self)
 	m.sessions[p] = s
 	return s, nil
 }
@@ -288,7 +274,7 @@ func (m *SessionManager) EncryptToAll(plaintext []byte) [][]byte {
 		}
 		blob, err := m.EncryptTo(p, plaintext)
 		if err != nil {
-			fmt.Printf("\n[crypto] cannot encrypt to %s: %v\n", short(p), err)
+			fmt.Printf("\n[crypto] cannot encrypt to %s: %v\n", Short(p), err)
 			continue
 		}
 		out = append(out, blob)
@@ -323,7 +309,7 @@ func (m *SessionManager) TryDecrypt(blob []byte) ([]byte, bool) {
 
 	s, err := m.receivingSession(from)
 	if err != nil {
-		fmt.Printf("\n[crypto] message from %s but no session: %v\n", short(from), err)
+		fmt.Printf("\n[crypto] message from %s but no session: %v\n", Short(from), err)
 		return nil, false
 	}
 
@@ -331,7 +317,7 @@ func (m *SessionManager) TryDecrypt(blob []byte) ([]byte, bool) {
 	if err != nil {
 		// A real failure worth showing: right recipient, wrong result. Usually
 		// means lost ratchet state after a restart.
-		fmt.Printf("\n[crypto] decrypt from %s failed: %v\n", short(from), err)
+		fmt.Printf("\n[crypto] decrypt from %s failed: %v\n", Short(from), err)
 		return nil, false
 	}
 	if err := m.persistLocked(); err != nil {
@@ -359,64 +345,26 @@ func (m *SessionManager) persistLocked() error {
 	disk := persistedSessionManager{
 		Version:  1,
 		Keys:     make(map[string][32]byte, len(m.keys)),
-		Sessions: make(map[string]persistedSession, len(m.sessions)),
+		Sessions: make(map[string]*crypto.Session, len(m.sessions)),
 	}
 	for p, pk := range m.keys {
 		disk.Keys[p.String()] = pk
 	}
 	for p, s := range m.sessions {
-		disk.Sessions[p.String()] = persistSession(s)
+		disk.Sessions[p.String()] = s
 	}
 	plaintext, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
 		return err
 	}
-	data, err := sealState(m.stateKey, plaintext, []byte("sessions:"+m.selfID.String()))
+	data, err := crypto.SealState(m.stateKey, plaintext, []byte("sessions:"+m.selfID.String()))
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(m.statePath, data, 0o600)
+	return fsatomic.WriteFile(m.statePath, data, 0o600)
 }
 
-func persistSession(s *Session) persistedSession {
-	ps := persistedSession{
-		Self:      s.self,
-		Remote:    s.remote,
-		RemoteSet: s.remoteSet,
-		RootKey:   s.rootKey,
-		Send:      s.send,
-		Recv:      s.recv,
-		PrevSendN: s.prevSendN,
-		Skipped:   make([]persistedSkipped, 0, len(s.skipped)),
-	}
-	for k, mk := range s.skipped {
-		ps.Skipped = append(ps.Skipped, persistedSkipped{
-			DH:  k.dh,
-			N:   k.n,
-			Key: mk,
-		})
-	}
-	return ps
-}
-
-func (ps persistedSession) session() *Session {
-	s := &Session{
-		self:      ps.Self,
-		remote:    ps.Remote,
-		remoteSet: ps.RemoteSet,
-		rootKey:   ps.RootKey,
-		send:      ps.Send,
-		recv:      ps.Recv,
-		prevSendN: ps.PrevSendN,
-		skipped:   make(map[skippedKey][32]byte, len(ps.Skipped)),
-	}
-	for _, entry := range ps.Skipped {
-		s.skipped[skippedKey{dh: entry.DH, n: entry.N}] = entry.Key
-	}
-	return s
-}
-
-func short(p peer.ID) string {
+func Short(p peer.ID) string {
 	s := p.String()
 	if len(s) > 12 {
 		return s[:12]

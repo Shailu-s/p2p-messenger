@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"crypto/sha256"
@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
+
 	"sync"
+
+	"p2pchat/internal/fsatomic"
 	"time"
 )
 
@@ -271,7 +273,7 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(s.path, data, 0o600)
+	return fsatomic.WriteFile(s.path, data, 0o600)
 }
 
 func encodeStoreCursor(seq uint64) string {
@@ -292,33 +294,4 @@ func decodeStoreCursor(token string) (uint64, error) {
 		return 0, err
 	}
 	return c.Seq, nil
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
 }

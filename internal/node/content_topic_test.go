@@ -1,19 +1,21 @@
-package main
+package node
 
 import (
 	"bytes"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"p2pchat/internal/crypto"
 )
 
 func managersWithKeys(t *testing.T) (*SessionManager, *SessionManager, peerIDs) {
 	t.Helper()
 
 	ids := testPeerIDsWithAliceInitiator(t)
-	aliceKey, _ := GenerateKeyPair()
-	bobKey, _ := GenerateKeyPair()
-	carolKey, _ := GenerateKeyPair()
+	aliceKey, _ := crypto.GenerateKeyPair()
+	bobKey, _ := crypto.GenerateKeyPair()
+	carolKey, _ := crypto.GenerateKeyPair()
 
 	alice := NewSessionManager(aliceKey, ids.alice)
 	bob := NewSessionManager(bobKey, ids.bob)
@@ -76,7 +78,7 @@ func TestContentTopicIsPairwiseAndRecipientOpaque(t *testing.T) {
 
 func TestNonRecipientIgnoresDifferentContentTopic(t *testing.T) {
 	alice, bob, ids := managersWithKeys(t)
-	carolKey, _ := GenerateKeyPair()
+	carolKey, _ := crypto.GenerateKeyPair()
 	carol := NewSessionManager(carolKey, ids.carol)
 	carol.LearnKey(ids.alice, alice.self.Public)
 

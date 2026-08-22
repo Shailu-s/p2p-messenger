@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"crypto/rand"
@@ -73,7 +73,7 @@ func DH(myPriv [32]byte, theirPub [32]byte) ([32]byte, error) {
 // `info` is a domain separator. The same secret with info "chain" and info
 // "message" produces unrelated keys. Reusing one info string for different
 // purposes collapses that separation, so every call site passes its own.
-func kdf(secret []byte, info string, outputs int) ([][32]byte, error) {
+func KDF(secret []byte, info string, outputs int) ([][32]byte, error) {
 	// salt is nil: our inputs are already uniformly random (DH output or a
 	// previous KDF output), which is the case where HKDF's salt adds nothin
 	r := hkdf.New(sha256.New, secret, nil, []byte(info))

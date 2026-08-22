@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"p2pchat/internal/store"
 )
 
 func testHost(t *testing.T) host.Host {
@@ -36,7 +38,7 @@ func TestFilterProtocolSelectedTopicVsAllTopics(t *testing.T) {
 	full := testHost(t)
 	selectedLight := testHost(t)
 	allLight := testHost(t)
-	store := NewStore(100)
+	store := store.NewStore(100)
 	RegisterFilterServer(full, store)
 
 	connectHosts(t, ctx, selectedLight, full)
@@ -72,7 +74,7 @@ func TestFilterProtocolRejectsEmptySelectedTopics(t *testing.T) {
 
 	full := testHost(t)
 	light := testHost(t)
-	RegisterFilterServer(full, NewStore(100))
+	RegisterFilterServer(full, store.NewStore(100))
 	connectHosts(t, ctx, light, full)
 
 	if _, err := SubscribeFilter(ctx, light, full.ID(), FilterRequest{}); err == nil {
@@ -80,10 +82,14 @@ func TestFilterProtocolRejectsEmptySelectedTopics(t *testing.T) {
 	}
 }
 
-func putTestMessage(t *testing.T, store *Store, topic, payload string) {
+func putTestMessage(t *testing.T, s *store.Store, topic, payload string) {
 	t.Helper()
 
-	ok, err := store.Put(stored(topic, payload))
+	ok, err := s.Put(store.StoredMessage{
+		ID:      store.MessageID([]byte(payload)),
+		Topic:   topic,
+		Payload: []byte(payload),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +98,7 @@ func putTestMessage(t *testing.T, store *Store, topic, payload string) {
 	}
 }
 
-func receiveMessage(t *testing.T, ch <-chan StoredMessage) StoredMessage {
+func receiveMessage(t *testing.T, ch <-chan store.StoredMessage) store.StoredMessage {
 	t.Helper()
 
 	select {
@@ -100,11 +106,11 @@ func receiveMessage(t *testing.T, ch <-chan StoredMessage) StoredMessage {
 		return m
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for filter message")
-		return StoredMessage{}
+		return store.StoredMessage{}
 	}
 }
 
-func assertNoMessage(t *testing.T, ch <-chan StoredMessage) {
+func assertNoMessage(t *testing.T, ch <-chan store.StoredMessage) {
 	t.Helper()
 
 	select {
