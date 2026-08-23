@@ -12,14 +12,71 @@ Deliberately out of scope: RLN and discovery hardening. The aim was depth on
 store-and-forward, forward-secret encryption, and the relay/store/filter split
 rather than a shallow clone of go-waku.
 
-### Seeing the encryption work
-
 ```sh
-go test ./internal/crypto -run TestDemoEavesdropper -v
+go test ./...                                             # 31 tests, no network needed
+go test ./internal/crypto -run TestDemoEavesdropper -v     # watch the encryption work
 ```
 
-Prints what a relaying node actually sees, then shows a stolen message key
-opening exactly one message, and replay and bit-flips being rejected.
+The second command prints what a relaying node actually sees, then shows a
+stolen message key opening exactly one message while replay and bit-flips are
+rejected.
+
+## How it works
+
+A message travels through four layers, each solving a problem the previous one
+creates.
+
+**Transport and routing.** Nodes connect over libp2p and publish on gossipsub,
+so there is no destination address on the wire: a node forwards to its peers and
+a seen-cache stops the loop. Messages reach peers that were never directly
+connected. Nodes remember every peer they meet in a persistent address book and
+redial it continuously, because in a P2P network rejoining is an ongoing effort
+rather than a startup step.
+
+**Encryption.** Two peers derive a shared secret with X25519 and run a Double
+Ratchet over it. Every message gets a fresh key from a one-way KDF chain, and
+each round trip mixes in new DH material. Compromising one key opens one
+message; compromising current state does not open the past, and stops opening
+the future after the next ratchet step.
+
+**Store-and-forward.** Gossip only reaches nodes that are online, so every node
+also stores what it relays. A node that was offline reconnects and queries a
+peer for what it missed. Because relays hold ciphertext under pairwise content
+topics rather than clear recipient IDs, a store node can serve history it cannot
+read and cannot attribute to a recipient.
+
+**Light clients.** A node that does not want to join gossipsub can subscribe to
+selected content topics from a full node over a filter protocol, or ask for all
+topics so its narrower interest is not revealed.
+
+## Problems worth reading about
+
+The parts where the obvious implementation is wrong.
+
+**The sync cursor could not be a timestamp.** Message timestamps are the
+*receiver's* clock, deliberately, so a lying sender cannot forge ordering. That
+makes them useless for paging: one node's clock compared against another's drifts
+and drops or duplicates messages at the page boundary. The fix is an opaque
+per-peer cursor token that the client stores and never interprets, which is what
+go-waku does. See `internal/store/cursor.go`.
+
+**A passing security test that never reached its check.** The test bounding how
+many message keys a peer can force us to derive was passing for the wrong
+reason: the forged header defaulted `N` to 0, so nothing was skipped and the
+bound never fired. It failed a different assertion and looked green. A security
+test that never reaches the check it names is worse than no test.
+See `TestMaxSkipEnforced` in `internal/crypto/session_test.go`.
+
+**Inbound connections record the wrong address.** When B dials A, the remote
+address A sees is B's ephemeral source port, which nothing listens on, so
+redialing it always fails. The peer book waits for libp2p's identify protocol to
+report the peer's real listen addresses before saving. See `internal/node/peers.go`.
+
+**Persisting ratchet state weakens the guarantee it provides.** Keys that would
+otherwise be gone from memory have to survive on disk, or store-and-forward
+messages become permanently unreadable after a restart. Resolved in favour of
+availability, with the state encrypted at rest and the trade-off stated rather
+than hidden. See `internal/crypto/state.go`.
 
 ## Layout
 
@@ -48,8 +105,9 @@ One terminal per node, all commands from the repo root.
 go build -o p2pchat ./cmd/p2pchat
 ```
 
-Rebuild after every code change. `go run .` also works but is slower to start,
-which matters when you are racing to type a message before a node reconnects.
+Rebuild after every code change. `go run ./cmd/p2pchat` also works but is slower
+to start, which matters when you are racing to type a message before a node
+reconnects.
 
 ### Command shape
 
@@ -178,11 +236,7 @@ means re-copying multiaddrs into every terminal.
   session state; encrypting the file protects against casual disk disclosure,
   not full machine compromise.
 
-### Running the tests
-
-```sh
-go test ./...
-```
+### Tests
 
 The crypto tests in `internal/crypto` are pure unit tests and need no running
 nodes. The `internal/node` tests start real in-process libp2p hosts on loopback.
