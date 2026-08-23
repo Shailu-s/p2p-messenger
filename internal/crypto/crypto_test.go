@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"bytes"
@@ -30,8 +30,9 @@ func TestDHAgreement(t *testing.T) {
 		t.Fatal("DH disagreement: the two sides derived different secret")
 	}
 
-	// A shared secret of all zeros means the curve operation silently faile
-	// Equality alone would still pass in that case, so check its explicitly.
+	// A shared secret of all zeros would mean the curve operation silently
+	// failed. Equality alone would still pass in that case, so check for it
+	// explicitly.
 	var zero [32]byte
 	if fromAlice == zero {
 		t.Fatal("shared secret is all zeros")
@@ -55,11 +56,11 @@ func TestDHDistinctPairs(t *testing.T) {
 func TestKDFDeterministic(t *testing.T) {
 	secret := []byte("a shared secret from DH")
 
-	first, err := kdf(secret, "chain", 2)
+	first, err := KDF(secret, "chain", 2)
 	if err != nil {
 		t.Fatalf("kdf: %v", err)
 	}
-	second, err := kdf(secret, "chain", 2)
+	second, err := KDF(secret, "chain", 2)
 	if err != nil {
 		t.Fatalf("kdf: %v", err)
 	}
@@ -80,8 +81,8 @@ func TestKDFDeterministic(t *testing.T) {
 func TestKDFDomainSeparation(t *testing.T) {
 	secret := []byte("a shared secret from DH")
 
-	chain, _ := kdf(secret, "chain", 1)
-	msg, _ := kdf(secret, "message", 1)
+	chain, _ := KDF(secret, "chain", 1)
+	msg, _ := KDF(secret, "message", 1)
 
 	if chain[0] == msg[0] {
 		t.Fatal("different info strings produced the same key")
@@ -90,7 +91,7 @@ func TestKDFDomainSeparation(t *testing.T) {
 
 func TestKDFNoTrailingZeros(t *testing.T) {
 	secret := []byte("a shared secret from DH")
-	keys, _ := kdf(secret, "chain", 1)
+	keys, _ := KDF(secret, "chain", 1)
 
 	// Catches a short read: the tail of the key silently left unwritten.
 	if bytes.Equal(keys[0][24:], make([]byte, 8)) {

@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"context"
@@ -12,19 +12,19 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// peerBook is the on-disk address book: multiaddrs of peers we have met,
+// PeerBook is the on-disk address book: multiaddrs of peers we have met,
 // each one ending in /p2p/<peerID> so it carries both where and who.
-type peerBook struct {
+type PeerBook struct {
 	path string
 }
 
-func newPeerBook(path string) *peerBook {
-	return &peerBook{path: path}
+func NewPeerBook(path string) *PeerBook {
+	return &PeerBook{path: path}
 }
 
 // load reads the saved addresses. A missing file is not an error: it just
 // means this is our first run and we have not met anyone yet.
-func (b *peerBook) load() []string {
+func (b *PeerBook) load() []string {
 	data, err := os.ReadFile(b.path)
 	if err != nil {
 		return nil
@@ -37,7 +37,7 @@ func (b *peerBook) load() []string {
 }
 
 // save appends one address, skipping duplicates.
-func (b *peerBook) save(addr string) error {
+func (b *PeerBook) save(addr string) error {
 	addrs := b.load()
 	for _, a := range addrs {
 		if a == addr {
@@ -61,7 +61,7 @@ func (b *peerBook) save(addr string) error {
 // it would fail. libp2p's identify protocol fixes this a moment after connecting,
 // when the peer tells us its real listen addresses. So we keep only addresses
 // that identify has confirmed are dialable, and skip the ephemeral ones.
-func (b *peerBook) Remember(h host.Host, p peer.ID) {
+func (b *PeerBook) Remember(h host.Host, p peer.ID) {
 	if p == h.ID() {
 		return // never save ourselves
 	}
@@ -77,7 +77,7 @@ func (b *peerBook) Remember(h host.Host, p peer.ID) {
 // that never dials anyone still builds an address book. We wait briefly before
 // recording, to give identify time to report the peer's real listen addresses
 // rather than the ephemeral source port of an inbound dial.
-func (b *peerBook) Watch(h host.Host) {
+func (b *PeerBook) Watch(h host.Host) {
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(n network.Network, c network.Conn) {
 			p := c.RemotePeer()
@@ -95,7 +95,7 @@ func (b *peerBook) Watch(h host.Host) {
 // finds the others down and would give up permanently. Peers restart at
 // arbitrary times, so rejoining has to be a continuous effort, not a one-shot.
 // This is the difference between a demo and something that survives churn.
-func (b *peerBook) KeepConnected(ctx context.Context, h host.Host, every time.Duration) {
+func (b *PeerBook) KeepConnected(ctx context.Context, h host.Host, every time.Duration) {
 	go func() {
 		for {
 			// only bother with peers we are not already talking to
@@ -122,7 +122,7 @@ func (b *peerBook) KeepConnected(ctx context.Context, h host.Host, every time.Du
 
 // Reconnect dials every peer we remember. Failures are expected and ignored:
 // peers move, go offline, or change ports. Returns how many came back.
-func (b *peerBook) Reconnect(ctx context.Context, h host.Host) int {
+func (b *PeerBook) Reconnect(ctx context.Context, h host.Host) int {
 	addrs := b.load()
 	if len(addrs) == 0 {
 		return 0

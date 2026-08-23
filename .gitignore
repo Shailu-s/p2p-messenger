@@ -1,2 +1,23 @@
 # Personal study log and build notes. Kept local, not published.
 LEARNING-LOG.md
+# private identity keys — never commit
+# *.key      = libp2p Ed25519 host key (signing)
+# *.x25519   = long-term X25519 key (ratchet DH); whoever holds it can
+#              impersonate this node, so it must never leave the machine
+*.key
+*.x25519
+
+# compiled binary
+p2pchat
+
+# runtime peer state (contains local LAN addresses)
+peers-*.json
+
+# runtime message/session state
+store-*.json
+cursors-*.json
+sessions-*.json.enc
+state-*.key
+
+# Personal work plan. Kept local.
+TODO.md

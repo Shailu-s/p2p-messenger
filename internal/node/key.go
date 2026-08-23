@@ -1,4 +1,4 @@
-package main
+package node
 
 import (
 	"crypto/rand"
@@ -7,7 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 )
 
-func loadOrCreateKey(path string) (crypto.PrivKey, error) {
+func LoadOrCreateKey(path string) (crypto.PrivKey, error) {
 	// try to read an existing key
 	data, err := os.ReadFile(path)
 	if err == nil {
