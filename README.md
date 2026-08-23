@@ -49,9 +49,11 @@ read and cannot attribute to a recipient.
 selected content topics from a full node over a filter protocol, or ask for all
 topics so its narrower interest is not revealed.
 
-## Problems worth reading about
+## Bugs found and fixed
 
-The parts where the obvious implementation is wrong.
+Four places where the obvious implementation was wrong. Each was hit,
+diagnosed, and fixed during the build; all four are resolved in the code below.
+They are the most interesting parts of the repo to read.
 
 **The sync cursor could not be a timestamp.** Message timestamps are the
 *receiver's* clock, deliberately, so a lying sender cannot forge ordering. That
@@ -72,7 +74,8 @@ address A sees is B's ephemeral source port, which nothing listens on, so
 redialing it always fails. The peer book waits for libp2p's identify protocol to
 report the peer's real listen addresses before saving. See `internal/node/peers.go`.
 
-**Persisting ratchet state weakens the guarantee it provides.** Keys that would
+**Persisting ratchet state weakens the guarantee it provides.** (A deliberate
+trade-off rather than a bug, included because it is the same kind of decision.) Keys that would
 otherwise be gone from memory have to survive on disk, or store-and-forward
 messages become permanently unreadable after a restart. Resolved in favour of
 availability, with the state encrypted at rest and the trade-off stated rather
