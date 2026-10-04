@@ -1,4 +1,4 @@
-# p2p-chat
+# p2p-messenger
 
 A minimal Waku-style P2P messaging node in Go: libp2p transport, gossipsub
 routing, a persistent peer book, store-and-forward history for nodes that were

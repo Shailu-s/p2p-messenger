@@ -1,4 +1,4 @@
-# p2p-chat Docs
+# p2p-messenger Docs
 
 Design notes:
 
